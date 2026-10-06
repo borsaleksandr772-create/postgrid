@@ -1,9 +1,10 @@
 const CACHE='postgrid-v2.0.0';
-const FILES=['./','./index.html','./app.js','./config.js','./styles.css','./manifest.webmanifest','./icons/icon-192.png','./icons/icon-512.png'];
+const FILES=['./','./index.html','./app.js?v=2.0.1','./config.js','./styles.css','./manifest.webmanifest','./icons/icon-192.png','./icons/icon-512.png'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(FILES)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('postgrid')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',event=>{
  const url=new URL(event.request.url);
- if(event.request.method!=='GET'||url.origin!==self.location.origin||url.search||!FILES.some(f=>new URL(f,self.registration.scope).pathname===url.pathname))return;
+ if(event.request.method!=='GET'||url.origin!==self.location.origin||!FILES.some(f=>new URL(f,self.registration.scope).pathname===url.pathname))return;
  event.respondWith(fetch(event.request).then(r=>{if(r.ok){const copy=r.clone();caches.open(CACHE).then(c=>c.put(event.request,copy));}return r;}).catch(()=>caches.match(event.request)));
 });
+
