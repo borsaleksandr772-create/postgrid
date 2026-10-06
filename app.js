@@ -1,73 +1,93 @@
-const PLATFORMS = [
-  {id:'instagram', name:'Instagram Reels', icon:'◎'},
-  {id:'tiktok', name:'TikTok', icon:'♪'},
-  {id:'youtube', name:'YouTube Shorts', icon:'▶'},
-  {id:'x', name:'X', icon:'𝕏'}
-];
-const state = {
-  tab: localStorage.getItem('pg.tab') || 'calendar',
-  month: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
-  posts: JSON.parse(localStorage.getItem('pg.posts') || '[]'),
-  accounts: JSON.parse(localStorage.getItem('pg.accounts') || '{}'),
-  file: null,
-  previewURL: null,
-  draft: freshDraft()
-};
-function freshDraft(){
-  const d = new Date(Date.now()+60*60*1000); d.setMinutes(0,0,0);
-  const local = toLocalInput(d);
-  return {name:'', defaultCaption:'', platforms:Object.fromEntries(PLATFORMS.map(p=>[p.id,{enabled:false,when:local,caption:'',title:''}]))};
+import {CONFIG} from './config.js';
+const PLATFORMS=[{id:'instagram',name:'Instagram Reels',icon:'◎'},{id:'tiktok',name:'TikTok',icon:'♪'},{id:'youtube',name:'YouTube',icon:'▶'},{id:'x',name:'X',icon:'𝕏'}];
+const STATUSES={scheduled:'Запланировано',processing:'Обрабатывается',running:'Отправляется',published:'Принято платформой',failed:'Ошибка обработки',needs_attention:'Требует проверки',cancelled:'Отменено'};
+const $=id=>document.getElementById(id);
+const esc=(s='')=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+const local=d=>new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16);
+const fmt=d=>new Date(d).toLocaleString('ru-RU',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+const timezone=Intl.DateTimeFormat().resolvedOptions().timeZone;
+function freshDraft(){return {id:crypto.randomUUID(),name:'',caption:'',targets:Object.fromEntries(PLATFORMS.map(p=>[p.id,{enabled:false,when:local(new Date(Date.now()+3600000)),description:'',title:'',privacy:'',madeForKids:'',comment:false,duet:false,stitch:false,commercial:false,ownBrand:false,branded:false,ai:false,consent:false}]))};}
+function readSession(){try{return JSON.parse(sessionStorage.getItem('postgrid.session')||'null');}catch{return null;}}
+const state={tab:'calendar',month:new Date(new Date().getFullYear(),new Date().getMonth(),1),session:readSession(),accounts:[],jobs:[],publishing:false,busy:false,draft:freshDraft(),file:null,preview:null,duration:0,upload:null,creator:null,loading:true};
+const configured=()=>!Object.values(CONFIG).some(v=>!v||v.includes('YOUR'));
+function session(value){state.session=value;if(value)sessionStorage.setItem('postgrid.session',JSON.stringify(value));else sessionStorage.removeItem('postgrid.session');}
+async function auth(path,body,token){const r=await fetch(CONFIG.supabaseUrl+'/auth/v1/'+path,{method:'POST',headers:{apikey:CONFIG.supabaseAnonKey,'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error('Вход не выполнен. Проверьте email, пароль и настройки Supabase.');return j;}
+let refreshing;
+async function access(){if(!state.session)throw Error('Войдите в PostGrid');if(Date.now()/1000>state.session.expires_at-60){refreshing ||= auth('token?grant_type=refresh_token',{refresh_token:state.session.refresh_token}).then(j=>session(j)).catch(e=>{session(null);app();throw e;}).finally(()=>{refreshing=null;});await refreshing;}return state.session.access_token;}
+async function api(path,method='GET',data){const token=await access();const r=await fetch(CONFIG.backendUrl+path,{method,headers:{Authorization:'Bearer '+token,...(data?{'Content-Type':'application/json'}:{})},body:data?JSON.stringify(data):undefined,cache:'no-store'});const j=await r.json();if(!r.ok)throw Error(j.error||'Ошибка сервера');return j;}
+function toast(text){$('message').textContent=text;$('message').className='toast';clearTimeout(toast.timer);toast.timer=setTimeout(()=>{$('message').className='';$('message').textContent='';},8000);}
+async function action(fn){if(state.busy)return;state.busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){toast(e.message);}finally{state.busy=false;app();}}
+async function sync(){const [a,j]=await Promise.all([api('/api/accounts'),api('/api/jobs')]);state.accounts=a.accounts;state.publishing=a.publishing;state.jobs=j.jobs;}
+function app(){
+ const title={calendar:'Календарь',composer:'Новый пост',queue:'Очередь',accounts:'Аккаунты'}[state.tab];
+ $('app').innerHTML=`<main class="shell"><header class="topbar"><div class="eyebrow">PostGrid · 2.0</div><h1>${title}</h1></header>${!configured()?'<section class="card"><h2>Настройка PostGrid</h2><p>Заполните публичные адреса и ключ Supabase в config.js. Пошаговая инструкция — в README.</p><p>Секреты соцсетей хранятся только на backend.</p></section>':!state.session?loginView():state.loading?'<p class="empty">Загружаем расписание…</p>':view()}</main>${state.session&&configured()?tabs():''}`;bind();
+ if(state.busy)document.querySelectorAll('button').forEach(b=>b.disabled=true);
 }
-function toLocalInput(d){ const z=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`; }
-function save(){ localStorage.setItem('pg.posts',JSON.stringify(state.posts)); localStorage.setItem('pg.accounts',JSON.stringify(state.accounts)); localStorage.setItem('pg.tab',state.tab); }
-function fmt(dt){ return new Intl.DateTimeFormat('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}).format(new Date(dt)); }
-function monthTitle(d){return new Intl.DateTimeFormat('ru-RU',{month:'long',year:'numeric'}).format(d).replace(/^./,m=>m.toUpperCase())}
-function app(){ document.getElementById('app').innerHTML = `<main class="shell"><header class="topbar"><div class="eyebrow">PostGrid</div><h1>${titleForTab()}</h1></header>${view()}</main>${tabs()}`; bind(); }
-function titleForTab(){return ({calendar:'Календарь',composer:'Новый пост',queue:'Очередь',accounts:'Аккаунты'})[state.tab]}
-function tabs(){ return `<nav class="tabs">${[['calendar','▦','Календарь'],['composer','＋','Пост'],['queue','≡','Очередь'],['accounts','◉','Аккаунты']].map(([id,ic,n])=>`<button class="tab ${state.tab===id?'active':''}" data-tab="${id}"><span class="ico">${ic}</span>${n}</button>`).join('')}</nav>`}
-function view(){ if(state.tab==='calendar')return calendarView(); if(state.tab==='composer')return composerView(); if(state.tab==='queue')return queueView(); return accountsView(); }
+function loginView(){return `<section class="card"><h2>Войти в PostGrid</h2><p class="muted">Ваше расписание и подключения доступны только вам.</p><form id="login"><label class="small" for="email">Email</label><input id="email" type="email" autocomplete="username" required><label class="small" for="password">Пароль</label><input id="password" type="password" autocomplete="current-password" required minlength="8"><button class="primary full" type="submit">Войти</button></form><p class="muted">Владелец создаёт пользователя в Supabase → Authentication → Users. Открытая регистрация отключена.</p></section>`;}
+function tabs(){return `<nav class="tabs" aria-label="Навигация">${[['calendar','▦','Календарь'],['composer','＋','Пост'],['queue','≡','Очередь'],['accounts','◉','Accounts']].map(([id,i,n])=>`<button class="tab ${state.tab===id?'active':''}" data-tab="${id}" aria-current="${state.tab===id?'page':'false'}"><span class="ico">${i}</span>${n}</button>`).join('')}</nav>`;}
+function view(){return (state.tab==='calendar'?calendarView():state.tab==='composer'?composerView():state.tab==='queue'?queueView():accountsView());}
 function calendarView(){
-  const m=state.month, y=m.getFullYear(), mon=m.getMonth();
-  const start=new Date(y,mon,1); let startOffset=(start.getDay()+6)%7; const first=new Date(y,mon,1-startOffset);
-  let cells=''; const today=new Date();
-  for(let i=0;i<42;i++){
-    const d=new Date(first); d.setDate(first.getDate()+i); const key=`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-    const items=[]; state.posts.forEach(p=>Object.entries(p.platforms||{}).forEach(([pid,x])=>{if(x.enabled){const dt=new Date(x.when);if(`${dt.getFullYear()}-${dt.getMonth()}-${dt.getDate()}`===key)items.push({pid,time:dt,title:p.name||'Видео'})}}));
-    const isToday=d.toDateString()===today.toDateString();
-    cells+=`<div class="day ${d.getMonth()!==mon?'out':''} ${isToday?'today':''}"><div class="num">${d.getDate()}</div>${items.slice(0,3).map(it=>`<div class="dot">${PLATFORMS.find(p=>p.id===it.pid)?.icon||''} ${String(it.time.getHours()).padStart(2,'0')}:${String(it.time.getMinutes()).padStart(2,'0')}</div>`).join('')}${items.length>3?`<div class="dot">+${items.length-3}</div>`:''}</div>`;
-  }
-  return `<section class="card"><div class="calendar-head"><button class="ghost" id="prevMonth">‹</button><h2>${monthTitle(m)}</h2><button class="ghost" id="nextMonth">›</button></div><div class="calendar-grid">${['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].map(x=>`<div class="dow">${x}</div>`).join('')}${cells}</div></section><button class="primary" id="newPost" style="width:100%">＋ Запланировать ролик</button>`;
+ const m=state.month,first=new Date(m.getFullYear(),m.getMonth(),1-(m.getDay()+6)%7);let cells='';
+ for(let i=0;i<42;i++){const d=new Date(first);d.setDate(first.getDate()+i);const jobs=state.jobs.filter(j=>j.status!=='cancelled'&&new Date(j.scheduled_at).toDateString()===d.toDateString());cells+=`<div class="day ${d.getMonth()!==m.getMonth()?'out':''} ${d.toDateString()===new Date().toDateString()?'today':''}"><div class="num">${d.getDate()}</div>${jobs.slice(0,3).map(j=>`<div class="dot" title="${esc(STATUSES[j.status])}">${PLATFORMS.find(p=>p.id===j.platform).icon} ${new Date(j.scheduled_at).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}</div>`).join('')}${jobs.length>3?`<div class="dot">+${jobs.length-3}</div>`:''}</div>`;}
+ return `<section class="card"><div class="calendar-head"><button id="prevMonth" aria-label="Предыдущий месяц">‹</button><h2>${m.toLocaleDateString('ru-RU',{month:'long',year:'numeric'})}</h2><button id="nextMonth" aria-label="Следующий месяц">›</button></div><div class="calendar-grid">${['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].map(d=>`<div class="dow">${d}</div>`).join('')}${cells}</div><p class="muted">Часовой пояс: ${esc(timezone)}</p></section><button class="primary full" id="newPost">＋ Запланировать ролик</button>`;
 }
-function composerView(){
-  const d=state.draft;
-  return `<section class="card"><div class="section-title">Видео</div><div class="composer-video"><div class="video-box">${state.previewURL?`<video src="${state.previewURL}" muted playsinline></video>`:'Одно видео<br>для всех сетей'}</div><div style="flex:1"><input type="file" id="videoFile" accept="video/*" /><div class="muted" style="font-size:12px;margin-top:7px">Выбираешь ролик один раз.</div></div></div><label class="small">Название внутри PostGrid</label><input id="postName" value="${esc(d.name)}" placeholder="Например: Иван — Париж"/><label class="small">Общее описание</label><textarea id="defaultCaption" placeholder="Будет подставлено во все выбранные соцсети">${esc(d.defaultCaption)}</textarea></section>
-  <section class="card"><div class="section-title">Куда и когда</div><div class="muted" style="font-size:13px">У каждой отмеченной сети — своё время и при желании свой текст.</div>${PLATFORMS.map(p=>platformEditor(p,d.platforms[p.id])).join('')}<div class="quick"><button id="sameTime">Одно время для всех</button><button id="clearPlatforms" class="ghost">Снять все</button></div></section>
-  <button class="primary" id="schedule" style="width:100%;padding:15px">Запланировать выбранные</button>`;
+function accountsView(){return `<div class="notice">Подключение проходит на официальном сайте платформы. PostGrid не запрашивает пароли соцсетей.</div>${PLATFORMS.map(p=>{const a=state.accounts.find(a=>a.platform===p.id);return `<section class="card account"><div class="logo">${p.icon}</div><div class="grow"><strong>${p.name}</strong><div class="status">${a?.connected?esc(a.display_name)+' · подключён':a?.configured?'Не подключён':'Нужны ключи на backend'}</div></div><button data-connect="${p.id}" ${a?.configured?'':'disabled'}>Connect</button>${a?.connected?`<button class="danger" data-disconnect="${p.id}">Disconnect</button>`:''}</section>`;}).join('')}<section class="card"><p>${state.publishing?'Серверная публикация включена.':'Отправка пока выключена (PUBLISH_ENABLED=false). Очередь сохраняется на сервере.'}</p><p class="muted">Instagram: профессиональный аккаунт. Для публичных публикаций могут потребоваться проверка приложения и доступ к API.</p><button id="refresh">Обновить</button> <button id="logout" class="ghost">Выйти из PostGrid</button></section>`;}
+function check(p,key,label,disabled=false){const x=state.draft.targets[p];return `<label class="check"><input type="checkbox" data-option="${key}" data-p="${p}" ${x[key]?'checked':''} ${disabled?'disabled':''}> <span>${label}</span></label>`;}
+function platformEditor(p){
+ const x=state.draft.targets[p.id],a=state.accounts.find(a=>a.platform===p.id);let extra='';
+ if(p.id==='youtube')extra=`<label class="small">YouTube title</label><input data-field="title" data-p="youtube" maxlength="100" value="${esc(x.title)}"><label class="small">Видимость</label><select data-field="privacy" data-p="youtube">${[['','Выберите'],['private','Личное'],['unlisted','По ссылке'],['public','Публичное']].map(([v,n])=>`<option value="${v}" ${x.privacy===v?'selected':''}>${n}</option>`).join('')}</select><label class="small">Видео создано для детей?</label><select data-field="madeForKids" data-p="youtube"><option value="">Выберите</option><option value="yes" ${x.madeForKids==='yes'?'selected':''}>Да</option><option value="no" ${x.madeForKids==='no'?'selected':''}>Нет</option></select>`;
+ if(p.id==='tiktok')extra=`<p>Аккаунт: ${esc(state.creator?.creator_nickname||a?.display_name||'—')}</p><label class="small">Кто сможет смотреть</label><select data-field="privacy" data-p="tiktok"><option value="">Выберите приватность</option>${(state.creator?.privacy_level_options||[]).map(v=>`<option value="${esc(v)}" ${x.privacy===v?'selected':''}>${esc(v)}</option>`).join('')}</select>${['comment','duet','stitch'].map((k,i)=>check('tiktok',k,['Разрешить комментарии','Разрешить дуэты','Разрешить Stitch'][i],!!state.creator?.[k+'_disabled'])).join('')}${check('tiktok','commercial','Коммерческий контент')}${x.commercial?check('tiktok','ownBrand','Свой бренд · Promotional content')+check('tiktok','branded','Другой бренд · Paid partnership'):''}${check('tiktok','ai','Контент создан с помощью AI')}${check('tiktok','consent',`Согласен с <a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank" rel="noopener">Music Usage Confirmation</a>${x.branded?' и <a href="https://www.tiktok.com/legal/page/global/bc-policy/en" target="_blank" rel="noopener">Branded Content Policy</a>':''} и разрешаю отправить видео по расписанию.`)}<p class="muted">После отправки обработка TikTok может занять несколько минут.</p>`;
+ return `<section class="platform ${x.enabled?'enabled':''}"><div class="platform-head"><span>${p.icon}</span><div class="platform-name">${p.name}</div><button class="switch ${x.enabled?'on':''}" data-toggle="${p.id}" role="switch" aria-checked="${x.enabled}" aria-label="Выбрать ${p.name}" ${a?.connected?'':'disabled'}><i></i></button></div>${!a?.connected?'<p class="muted">Сначала нажмите Connect в Accounts.</p>':''}<div class="platform-body"><label class="small">Дата и время · ${esc(timezone)}</label><input type="datetime-local" data-field="when" data-p="${p.id}" value="${esc(x.when)}"><label class="small">Описание для ${p.name}</label><textarea data-field="description" data-p="${p.id}" maxlength="${p.id==='youtube'?5000:p.id==='x'?280:2200}" placeholder="Пусто — использовать общее описание">${esc(x.description)}</textarea>${extra}</div></section>`;
 }
-function platformEditor(p,x){return `<div class="platform ${x.enabled?'enabled':''}" data-platform="${p.id}"><div class="platform-head"><div style="font-size:22px">${p.icon}</div><div class="platform-name">${p.name}</div><button class="switch ${x.enabled?'on':''}" data-toggle="${p.id}" aria-label="toggle"><i></i></button></div><div class="platform-body"><label class="small">Дата и время</label><input type="datetime-local" data-when="${p.id}" value="${x.when}">${p.id==='youtube'?`<label class="small">Заголовок YouTube</label><input data-title="${p.id}" value="${esc(x.title)}" placeholder="Название Short">`:''}<label class="small">Описание для этой сети</label><textarea data-caption="${p.id}" placeholder="Оставь пустым — возьмём общее">${esc(x.caption)}</textarea></div></div>`}
-function queueView(){
-  if(!state.posts.length)return `<div class="empty">Пока ничего не запланировано.<br><br><button class="primary" id="newPost">Создать первый пост</button></div>`;
-  const posts=[...state.posts].sort((a,b)=>earliest(a)-earliest(b));
-  return posts.map(p=>`<section class="card"><div class="queue-item"><div class="thumb">🎬</div><div class="queue-main"><div class="queue-title">${esc(p.name||'Без названия')}</div><div class="muted" style="font-size:12px;margin-top:4px">${esc(p.fileName||'Видео')}</div></div><button class="danger" data-delete="${p.id}">Удалить</button></div><div style="margin-top:10px">${Object.entries(p.platforms).filter(([,x])=>x.enabled).map(([pid,x])=>`<div class="dest"><span>${PLATFORMS.find(z=>z.id===pid)?.icon} ${PLATFORMS.find(z=>z.id===pid)?.name}</span><span><span class="badge">${fmt(x.when)}</span></span></div>`).join('')}</div></section>`).join('');
+function composerView(){return `<section class="card"><h2>Одно видео. Несколько платформ.</h2><label class="small" for="videoFile">MP4 · до 50 МБ · H.264/AAC</label><input id="videoFile" type="file" accept="video/mp4">${state.preview?`<video class="preview" src="${esc(state.preview)}" controls playsinline></video><p>${esc(state.file.name)} · ${(state.file.size/1048576).toFixed(1)} МБ</p>`:''}<label class="small">Название внутри PostGrid</label><input id="postName" maxlength="200" value="${esc(state.draft.name)}"><label class="small">Общее описание</label><textarea id="commonCaption" maxlength="5000">${esc(state.draft.caption)}</textarea></section><section class="card"><h2>Куда и когда</h2>${PLATFORMS.map(platformEditor).join('')}</section><p class="muted">Каждая выбранная сеть получит видео в своё время. Даты сохраняются в UTC. ${state.publishing?'':'Отправка отключена на backend; задания останутся в очереди.'}</p><button id="schedule" class="primary full">Загрузить и запланировать</button>`;}
+function queueView(){return `<button id="refresh" class="ghost full">Обновить очередь</button>${state.jobs.length?state.jobs.map(j=>`<section class="card"><div class="queue-title">${esc(j.posts?.name||'Видео')}</div><div class="dest"><span>${esc(PLATFORMS.find(p=>p.id===j.platform)?.name)}</span><span>${fmt(j.scheduled_at)}</span></div><span class="badge ${j.status}">${esc(STATUSES[j.status]||j.status)}</span>${j.external_id?`<p>Platform ID: ${esc(j.external_id)}</p>`:''}${j.error?`<p class="error">${esc(j.error)}</p>`:''}${j.status==='needs_attention'?'<p class="muted">Проверьте публикацию в соцсети. Автоповтор остановлен, чтобы не создать дубль. После проверки можно создать новый пост.</p>':''}${['scheduled','processing'].includes(j.status)?`<button class="danger" data-cancel="${j.id}">Отменить</button>`:''}</section>`).join(''):'<div class="empty">Пока нет публикаций.<br>Создайте пост на вкладке «Пост».</div>'}<p class="muted">Показаны последние 500 заданий. «Принято платформой» не означает публичную видимость: её определяют выбранные настройки и ограничения приложения.</p>`;}
+function on(id,fn){if($(id))$(id).onclick=()=>action(fn);}
+async function connect(p){const bytes=crypto.getRandomValues(new Uint8Array(32));const proof=btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(proof));const proof_hash=btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');const r=await api('/api/oauth/'+p+'/start','POST',{proof_hash});sessionStorage.setItem('postgrid.oauth.'+r.state,proof);location.assign(r.url);}
+async function chooseFile(file){
+ if(!file)return;if(file.type!=='video/mp4'||file.size>52428800)throw Error('Выберите MP4 до 50 МБ');
+ if(state.preview)URL.revokeObjectURL(state.preview);state.preview=URL.createObjectURL(file);state.file=file;state.upload=null;state.duration=0;
+ const video=document.createElement('video');video.preload='metadata';video.src=state.preview;
+ state.duration=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Не удалось прочитать длительность видео')),15000);video.onloadedmetadata=()=>{clearTimeout(timer);Number.isFinite(video.duration)&&video.duration>0?resolve(video.duration):reject(Error('Некорректное видео'));};video.onerror=()=>{clearTimeout(timer);reject(Error('Браузер не поддерживает это видео'));};});
 }
-function earliest(p){const arr=Object.values(p.platforms||{}).filter(x=>x.enabled).map(x=>new Date(x.when).getTime());return Math.min(...arr)}
-function accountsView(){return `<div class="notice">Как в приложении для английского: эту версию можно установить с Safari на экран «Домой». OAuth для реальной публикации подключим следующим этапом — пароли PostGrid видеть не будет.</div><div style="height:12px"></div>${PLATFORMS.map(p=>{const on=!!state.accounts[p.id];return `<section class="card account"><div class="logo">${p.icon}</div><div class="grow"><div style="font-weight:850">${p.name}</div><div class="status">${on?'Подключение помечено для теста':'Не подключено'}</div></div><button data-account="${p.id}" class="${on?'ghost':'primary'}">${on?'Отключить':'Подключить'}</button></section>`}).join('')}<section class="card"><div class="section-title">Режим MVP</div><div class="muted" style="font-size:13px;line-height:1.5">Сейчас расписание хранится на самом iPhone. После подключения backend + OAuth публикации будут уходить с сервера даже когда PostGrid закрыт.</div></section>`}
+async function schedule(){
+ if(!state.file||!state.duration)throw Error('Сначала выберите видео');
+ const targets=Object.entries(state.draft.targets).filter(([,x])=>x.enabled).map(([platform,x])=>{
+   const d=new Date(x.when);if(!Number.isFinite(d.getTime())||d<=new Date()||d>Date.now()+90*86400000)throw Error('Выберите будущее время в пределах 90 дней');
+   if(platform==='youtube'&&(!x.title.trim()||!x.privacy||!x.madeForKids))throw Error('Заполните title, видимость и аудиторию YouTube');
+   if(platform==='tiktok'&&(!x.privacy||!x.consent||x.commercial&&!x.ownBrand&&!x.branded||x.branded&&x.privacy==='SELF_ONLY'))throw Error('Проверьте приватность, рекламу и согласие TikTok');
+   const description=x.description||state.draft.caption;if(description.length>({instagram:2200,tiktok:2200,youtube:5000,x:280})[platform])throw Error('Слишком длинное описание для '+platform);
+   return {platform,scheduled_at:d.toISOString(),description,title:x.title,options:{privacy:x.privacy,madeForKids:x.madeForKids==='yes',comment:x.comment,duet:x.duet,stitch:x.stitch,commercial:x.commercial,ownBrand:x.ownBrand,branded:x.branded,ai:x.ai,consent:x.consent}};
+ });
+ if(!targets.length)throw Error('Выберите хотя бы одну платформу');
+ if(!state.upload){
+   toast('Загружаем видео… Не закрывайте страницу.');
+   const signed=await api('/api/uploads','POST',{name:state.file.name,size:state.file.size,type:state.file.type,duration:state.duration});
+   const r=await fetch(signed.url,{method:'PUT',headers:{'Content-Type':'video/mp4','x-upsert':'false'},body:state.file});if(!r.ok)throw Error('Загрузка не завершена. Попробуйте снова.');state.upload=signed.id;
+ }
+ await api('/api/posts','POST',{id:state.draft.id,upload_id:state.upload,name:state.draft.name||state.file.name,targets});
+ state.draft=freshDraft();state.file=null;state.upload=null;if(state.preview)URL.revokeObjectURL(state.preview);state.preview=null;state.tab='queue';await sync();toast('Видео сохранено. Задания добавлены в очередь.');
+}
 function bind(){
-  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{state.tab=b.dataset.tab;save();app()});
-  by('prevMonth',()=>{state.month=new Date(state.month.getFullYear(),state.month.getMonth()-1,1);app()}); by('nextMonth',()=>{state.month=new Date(state.month.getFullYear(),state.month.getMonth()+1,1);app()}); by('newPost',()=>{state.tab='composer';save();app()});
-  const f=document.getElementById('videoFile'); if(f)f.onchange=e=>{state.file=e.target.files[0]||null;if(state.previewURL)URL.revokeObjectURL(state.previewURL);state.previewURL=state.file?URL.createObjectURL(state.file):null;app()};
-  const name=document.getElementById('postName'); if(name)name.oninput=e=>state.draft.name=e.target.value; const dc=document.getElementById('defaultCaption'); if(dc)dc.oninput=e=>state.draft.defaultCaption=e.target.value;
-  document.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=()=>{const id=b.dataset.toggle;state.draft.platforms[id].enabled=!state.draft.platforms[id].enabled;app()});
-  document.querySelectorAll('[data-when]').forEach(i=>i.oninput=e=>state.draft.platforms[e.target.dataset.when].when=e.target.value);
-  document.querySelectorAll('[data-caption]').forEach(i=>i.oninput=e=>state.draft.platforms[e.target.dataset.caption].caption=e.target.value);
-  document.querySelectorAll('[data-title]').forEach(i=>i.oninput=e=>state.draft.platforms[e.target.dataset.title].title=e.target.value);
-  by('sameTime',()=>{const enabled=Object.values(state.draft.platforms).filter(x=>x.enabled);const base=enabled[0]?.when||toLocalInput(new Date());Object.values(state.draft.platforms).forEach(x=>{if(x.enabled)x.when=base});app()}); by('clearPlatforms',()=>{Object.values(state.draft.platforms).forEach(x=>x.enabled=false);app()});
-  by('schedule',()=>{if(!Object.values(state.draft.platforms).some(x=>x.enabled))return toast('Отметь хотя бы одну соцсеть'); if(!state.file)return toast('Сначала выбери видео'); state.posts.push({id:crypto.randomUUID(),name:state.draft.name||state.file.name,fileName:state.file.name,defaultCaption:state.draft.defaultCaption,platforms:JSON.parse(JSON.stringify(state.draft.platforms)),createdAt:new Date().toISOString()}); state.draft=freshDraft();state.file=null;if(state.previewURL)URL.revokeObjectURL(state.previewURL);state.previewURL=null;state.tab='queue';save();toast('Добавлено в расписание');app()});
-  document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>{state.posts=state.posts.filter(p=>p.id!==b.dataset.delete);save();app()});
-  document.querySelectorAll('[data-account]').forEach(b=>b.onclick=()=>{const id=b.dataset.account;state.accounts[id]=!state.accounts[id];save();app()});
+ if($('login'))$('login').onsubmit=e=>{e.preventDefault();const email=$('email').value,password=$('password').value;action(async()=>{session(await auth('token?grant_type=password',{email,password}));state.loading=false;await finishOAuth();await sync();});};
+ document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>action(async()=>{state.tab=b.dataset.tab;if(state.tab==='composer'&&state.accounts.some(a=>a.platform==='tiktok'&&a.connected))state.creator=await api('/api/tiktok/creator');}));
+ on('prevMonth',()=>{state.month=new Date(state.month.getFullYear(),state.month.getMonth()-1,1);});on('nextMonth',()=>{state.month=new Date(state.month.getFullYear(),state.month.getMonth()+1,1);});
+ on('newPost',async()=>{state.tab='composer';if(state.accounts.some(a=>a.platform==='tiktok'&&a.connected))state.creator=await api('/api/tiktok/creator');});
+ on('refresh',sync);on('schedule',schedule);
+ on('logout',async()=>{try{await auth('logout',{},await access());}finally{session(null);state.jobs=[];state.accounts=[];state.draft=freshDraft();state.file=null;state.upload=null;if(state.preview)URL.revokeObjectURL(state.preview);state.preview=null;}});
+ document.querySelectorAll('[data-connect]').forEach(b=>b.onclick=()=>action(()=>connect(b.dataset.connect)));
+ document.querySelectorAll('[data-disconnect]').forEach(b=>b.onclick=()=>action(async()=>{const r=await api('/api/accounts/'+b.dataset.disconnect,'DELETE');await sync();toast(r.revoked?'Отключено. Запланированные задания отменены.':'Отключено в PostGrid. Отозвать доступ в соцсети не удалось — удалите разрешение в её настройках.');}));
+ document.querySelectorAll('[data-cancel]').forEach(b=>b.onclick=()=>action(async()=>{await api('/api/jobs/'+b.dataset.cancel+'/cancel','POST',{});await sync();}));
+ document.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=()=>action(async()=>{const x=state.draft.targets[b.dataset.toggle];if(b.dataset.toggle==='tiktok'&&!x.enabled)state.creator=await api('/api/tiktok/creator');x.enabled=!x.enabled;}));
+ document.querySelectorAll('[data-field]').forEach(el=>el.oninput=()=>{state.draft.targets[el.dataset.p][el.dataset.field]=el.value;});
+ document.querySelectorAll('[data-option]').forEach(el=>el.onchange=()=>{const x=state.draft.targets[el.dataset.p];x[el.dataset.option]=el.checked;if(el.dataset.option==='commercial'&&!el.checked){x.ownBrand=false;x.branded=false;}if(['commercial','branded'].includes(el.dataset.option)){x.consent=false;app();}});
+ if($('postName'))$('postName').oninput=e=>state.draft.name=e.target.value;
+ if($('commonCaption'))$('commonCaption').oninput=e=>state.draft.caption=e.target.value;
+ if($('videoFile'))$('videoFile').onchange=e=>action(()=>chooseFile(e.target.files[0]));
 }
-function by(id,fn){const el=document.getElementById(id);if(el)el.onclick=fn}
-function toast(msg){const e=document.createElement('div');e.className='toast';e.textContent=msg;document.body.appendChild(e);setTimeout(()=>e.remove(),1800)}
-function esc(s=''){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]))}
-if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./service-worker.js'));
-app();
+async function finishOAuth(){const q=new URLSearchParams(location.hash.slice(1));const error=q.get('oauth_error'),s=q.get('oauth');if(error){history.replaceState(null,'',location.pathname);toast('OAuth: '+error);return;}if(!s||!state.session)return;const proof=sessionStorage.getItem('postgrid.oauth.'+s);if(!proof)throw Error('Вернитесь в тот же браузер и повторите Connect.');await api('/api/oauth/complete','POST',{state:s,proof});sessionStorage.removeItem('postgrid.oauth.'+s);history.replaceState(null,'',location.pathname);state.tab='accounts';toast('Аккаунт подключён');}
+async function init(){app();if(configured()&&state.session){try{await finishOAuth();await sync();}catch(e){toast(e.message);}finally{state.loading=false;app();}}}
+if('serviceWorker' in navigator)navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
+setInterval(async()=>{if(state.session&&!state.busy&&!state.loading&&['queue','calendar'].includes(state.tab)&&document.visibilityState==='visible'){try{await sync();app();}catch{/* Keep the last server snapshot while offline. */}}},30000);
+window.addEventListener('offline',()=>toast('Нет сети. Отправка новых заданий недоступна; сервер продолжает работу.'));
+init();
+
