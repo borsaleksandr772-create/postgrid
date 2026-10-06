@@ -1,0 +1,20 @@
+name: PostGrid
+options:
+  bundleIdPrefix: com.postgrid
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  PostGrid:
+    type: application
+    platform: iOS
+    sources:
+      - PostGrid
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.postgrid.app
+        SWIFT_VERSION: 5.0
+        INFOPLIST_KEY_CFBundleDisplayName: PostGrid
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads: YES
+        GENERATE_INFOPLIST_FILE: YES
